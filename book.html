@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Book a Meeting — Profit Insider</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+  <script src="./config.js"></script>
+</head>
+<body>
+
+<div class="booking-wrap">
+  <div class="booking-card" id="booking-card">
+
+    <!-- Left: Event info panel -->
+    <div class="booking-info" id="event-info">
+      <div class="loading-center"><div class="spinner"></div></div>
+    </div>
+
+    <!-- Right: Dynamic content area -->
+    <div class="booking-right-area">
+
+      <!-- Step 1: Date + Time selection -->
+      <div id="step-datetime">
+        <!-- Calendar column -->
+        <div class="booking-cal-col">
+          <p class="section-label">Select a Date & Time</p>
+          <div class="cal-header">
+            <button class="cal-btn" id="prev-month">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            </button>
+            <h3 id="cal-month-label"></h3>
+            <button class="cal-btn" id="next-month">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+          </div>
+          <div class="cal-days-header">
+            <span>SUN</span><span>MON</span><span>TUE</span><span>WED</span><span>THU</span><span>FRI</span><span>SAT</span>
+          </div>
+          <div class="cal-grid" id="cal-grid"></div>
+          <div class="cal-timezone">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <span id="tz-label"></span>
+          </div>
+        </div>
+
+        <!-- Slots column (revealed after date click) -->
+        <div class="booking-slots-col" id="slots-col">
+          <p class="section-label" id="slots-date-label"></p>
+          <div class="slots-list" id="slots-list"></div>
+        </div>
+      </div>
+
+      <!-- Step 2: Details form -->
+      <div id="step-form" class="booking-form-col">
+        <div class="form-back-header">
+          <button class="btn btn-ghost btn-sm" id="btn-back">
+            <svg style="width:14px;height:14px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            Back
+          </button>
+          <p class="section-label" style="margin:0;">Your Details</p>
+        </div>
+
+        <div class="booking-summary" id="form-summary"></div>
+
+        <form class="booking-form" id="booking-form">
+          <div class="form-group">
+            <label for="f-name">Full Name</label>
+            <input type="text" id="f-name" placeholder="Jane Smith" required>
+            <span class="field-error" id="err-name"></span>
+          </div>
+          <div class="form-group">
+            <label for="f-email">Email Address</label>
+            <input type="email" id="f-email" placeholder="jane@company.com" required>
+            <span class="field-error" id="err-email"></span>
+          </div>
+          <div class="form-group">
+            <label for="f-notes">Notes (optional)</label>
+            <textarea id="f-notes" placeholder="Anything you'd like us to know before the call..." rows="3"></textarea>
+          </div>
+          <button type="submit" class="btn btn-primary" id="btn-submit"
+            style="width:100%; height:50px; font-size:15px; border-radius:12px; margin-top:4px;">
+            Confirm Booking
+          </button>
+        </form>
+      </div>
+
+      <!-- Error state -->
+      <div id="step-error" style="display:none; padding:80px 40px; text-align:center;">
+        <p style="color:var(--red); font-size:14px;" id="error-msg"></p>
+      </div>
+
+    </div><!-- /booking-right-area -->
+  </div><!-- /booking-card -->
+</div>
+
+<div id="toast"></div>
+
+<script>
+const sb = window.supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabaseAnonKey)
+const slug = new URLSearchParams(location.search).get('slug')
+const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone
+const tzShort = new Intl.DateTimeFormat('en-US', { timeZone: TZ, timeZoneName: 'short' })
+  .formatToParts(new Date()).find(p => p.type === 'timeZoneName')?.value || TZ
+
+let eventType   = null
+let bookingLink = null
+let selectedDate = null
+let selectedSlot = null
+let calYear, calMonth
+let availDaysOfWeek = new Set() // day-of-week indices (0-6) that have agent schedules
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+async function boot() {
+  if (!slug) { showError('No booking link specified.'); return }
+
+  const { data, error } = await sb
+    .from('booking_links')
+    .select('*, event_type:event_types(*)')
+    .eq('slug', slug)
+    .eq('is_active', true)
+    .single()
+
+  if (error || !data) { showError('This booking link is invalid or no longer active.'); return }
+
+  bookingLink = data
+  eventType   = data.event_type
+  document.title = (data.title || eventType.name) + ' — Profit Insider'
+
+  renderInfo()
+  document.getElementById('tz-label').textContent = TZ.replace(/_/g, ' ') + ' (' + tzShort + ')'
+
+  // Pre-fetch which days of week have availability (for gold dots on calendar)
+  try {
+    const { data: etAgents } = await sb
+      .from('event_type_agents')
+      .select('agent_id')
+      .eq('event_type_id', eventType.id)
+
+    if (etAgents && etAgents.length > 0) {
+      const agentIds = etAgents.map(r => r.agent_id)
+      const { data: schedules } = await sb
+        .from('availability')
+        .select('day_of_week')
+        .in('agent_id', agentIds)
+
+      if (schedules) schedules.forEach(s => availDaysOfWeek.add(s.day_of_week))
+    }
+  } catch (e) { /* dots just won't show — non-fatal */ }
+
+  initCalendar()
+}
+
+// ─── Info panel ───────────────────────────────────────────────────────────────
+function renderInfo() {
+  document.getElementById('event-info').innerHTML = `
+    <div class="booking-info-logo">
+      <img src="./pi-logo.png" alt="Profit Insider" onerror="this.style.display='none'">
+    </div>
+    <div class="booking-info-bar" style="background:${eventType.color}"></div>
+    <h1>${bookingLink.title || eventType.name}</h1>
+    ${bookingLink.description ? `<p class="desc">${bookingLink.description}</p>` : ''}
+    <div class="booking-meta">
+      <div class="booking-meta-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        ${eventType.duration_minutes} minutes
+      </div>
+      ${eventType.location ? `
+      <div class="booking-meta-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+        ${eventType.location}
+      </div>` : ''}
+      <div class="booking-meta-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 10l-4 4L7 10"/><rect x="3" y="4" width="18" height="18" rx="2"/></svg>
+        Google Meet link provided
+      </div>
+      <div class="booking-meta-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        Calendar invite sent
+      </div>
+    </div>
+    ${eventType.description ? `<p style="margin-top:20px; padding-top:16px; border-top:1px solid var(--border); font-size:12px; color:var(--text-3); line-height:1.65;">${eventType.description}</p>` : ''}
+  `
+}
+
+// ─── Calendar ─────────────────────────────────────────────────────────────────
+function initCalendar() {
+  const now = new Date()
+  calYear  = now.getFullYear()
+  calMonth = now.getMonth()
+  renderCalendar()
+
+  document.getElementById('prev-month').onclick = () => {
+    if (calMonth === 0) { calYear--; calMonth = 11 } else calMonth--
+    renderCalendar()
+  }
+  document.getElementById('next-month').onclick = () => {
+    if (calMonth === 11) { calYear++; calMonth = 0 } else calMonth++
+    renderCalendar()
+  }
+}
+
+function renderCalendar() {
+  const MONTHS = ['January','February','March','April','May','June',
+                  'July','August','September','October','November','December']
+  document.getElementById('cal-month-label').textContent = `${MONTHS[calMonth]} ${calYear}`
+
+  const firstDay    = new Date(calYear, calMonth, 1).getDay()
+  const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate()
+  const today = new Date(); today.setHours(0,0,0,0)
+
+  let html = ''
+  for (let i = 0; i < firstDay; i++) html += `<button class="cal-day other-month" disabled></button>`
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const date = new Date(calYear, calMonth, d)
+    const isPast = date < today
+    const isTod  = date.getTime() === today.getTime()
+    const isSel  = selectedDate && date.getTime() === selectedDate.getTime()
+    const dow    = date.getDay()
+    const hasAvail = !isPast && availDaysOfWeek.has(dow)
+
+    let cls = 'cal-day'
+    if (isPast)    cls += ' disabled'
+    if (isTod)     cls += ' today'
+    if (isSel)     cls += ' selected'
+    if (hasAvail)  cls += ' has-avail'
+
+    html += `<button class="${cls}" ${isPast ? 'disabled' : ''} onclick="selectDate(${calYear},${calMonth},${d})">${d}</button>`
+  }
+  document.getElementById('cal-grid').innerHTML = html
+}
+
+async function selectDate(y, m, d) {
+  selectedDate = new Date(y, m, d)
+  selectedSlot = null
+  renderCalendar()
+
+  const slotsCol = document.getElementById('slots-col')
+  slotsCol.classList.add('open')
+
+  const DAYS   = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
+  const MONTHS = ['January','February','March','April','May','June',
+                  'July','August','September','October','November','December']
+  document.getElementById('slots-date-label').textContent = `${DAYS[selectedDate.getDay()]}, ${MONTHS[m]} ${d}`
+  document.getElementById('slots-list').innerHTML =
+    '<div class="loading-center" style="padding:24px 0;"><div class="spinner"></div></div>'
+
+  // Fetch available slots
+  try {
+    const res = await fetch(`${CONFIG.supabaseUrl}/functions/v1/get-availability`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': CONFIG.supabaseAnonKey,
+        'Authorization': `Bearer ${CONFIG.supabaseAnonKey}`,
+      },
+      body: JSON.stringify({ slug, date: isoDate(selectedDate), timezone: TZ }),
+    })
+    const data = await res.json()
+
+    if (!res.ok || !data) {
+      document.getElementById('slots-list').innerHTML =
+        '<p style="font-size:13px;color:var(--text-3);padding:12px 0;">Could not load times. Please try again.</p>'
+      return
+    }
+
+    const available = (data.slots || []).filter(s => s.spots_left > 0)
+    if (available.length === 0) {
+      document.getElementById('slots-list').innerHTML =
+        '<p style="font-size:13px;color:var(--text-3);padding:12px 0;">No times available on this date.</p>'
+      return
+    }
+
+    document.getElementById('slots-list').innerHTML = available.map(slot => `
+      <button class="slot-btn" onclick="selectSlot(${JSON.stringify(slot).replace(/"/g, '&quot;')})">
+        ${fmtTime(slot.start)}
+      </button>
+    `).join('')
+  } catch (err) {
+    document.getElementById('slots-list').innerHTML =
+      '<p style="font-size:13px;color:var(--red);padding:12px 0;">Could not reach server. Check your connection.</p>'
+  }
+}
+
+function selectSlot(slot) {
+  selectedSlot = slot
+  showForm()
+}
+
+// ─── Details form ─────────────────────────────────────────────────────────────
+function showForm() {
+  document.getElementById('step-datetime').style.display = 'none'
+  document.getElementById('step-form').classList.add('active')
+
+  document.getElementById('form-summary').innerHTML = `
+    <div class="booking-summary-row">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      ${fmtDate(selectedSlot.start)}
+    </div>
+    <div class="booking-summary-row">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      ${fmtTime(selectedSlot.start)} – ${fmtTime(selectedSlot.end)} ${tzShort} · ${eventType.duration_minutes} min
+    </div>
+  `
+}
+
+document.getElementById('btn-back').onclick = () => {
+  document.getElementById('step-form').classList.remove('active')
+  document.getElementById('step-datetime').style.display = 'flex'
+}
+
+document.getElementById('booking-form').onsubmit = async (e) => {
+  e.preventDefault()
+  const name  = document.getElementById('f-name').value.trim()
+  const email = document.getElementById('f-email').value.trim()
+  const notes = document.getElementById('f-notes').value.trim()
+
+  document.getElementById('err-name').textContent  = ''
+  document.getElementById('err-email').textContent = ''
+
+  let valid = true
+  if (!name)  { document.getElementById('err-name').textContent = 'Name is required'; valid = false }
+  if (!email) { document.getElementById('err-email').textContent = 'Email is required'; valid = false }
+  else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    document.getElementById('err-email').textContent = 'Enter a valid email'; valid = false
+  }
+  if (!valid) return
+
+  const btn = document.getElementById('btn-submit')
+  btn.disabled = true
+  btn.textContent = 'Scheduling...'
+
+  try {
+    const res = await fetch(`${CONFIG.supabaseUrl}/functions/v1/create-booking`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': CONFIG.supabaseAnonKey,
+        'Authorization': `Bearer ${CONFIG.supabaseAnonKey}`,
+      },
+      body: JSON.stringify({
+        slug,
+        start_time: selectedSlot.start,
+        customer_name: name,
+        customer_email: email,
+        notes: notes || undefined,
+      }),
+    })
+    const data = await res.json()
+
+    if (!res.ok) {
+      btn.disabled = false
+      btn.textContent = 'Confirm Booking'
+      alert(data.error || 'Booking failed. The slot may no longer be available.')
+      return
+    }
+
+    const params = new URLSearchParams({
+      slug,
+      name:  data.booking.customer_name,
+      email: data.booking.customer_email,
+      start: data.booking.start_time,
+      end:   data.booking.end_time,
+      agent: data.agent_name,
+    })
+    if (data.meet_link) params.set('meet', data.meet_link)
+    window.location.href = `./book-success.html?${params}`
+  } catch (err) {
+    btn.disabled = false
+    btn.textContent = 'Confirm Booking'
+    alert('Could not reach server. Please try again.')
+  }
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function showError(msg) {
+  document.getElementById('step-datetime').style.display = 'none'
+  document.getElementById('step-error').style.display    = 'block'
+  document.getElementById('error-msg').textContent = msg
+}
+
+function isoDate(date) {
+  return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`
+}
+function fmtTime(iso) {
+  return new Date(iso).toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit', hour12:true, timeZone: TZ })
+}
+function fmtDate(iso) {
+  return new Date(iso).toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric', year:'numeric', timeZone: TZ })
+}
+
+boot()
+</script>
+</body>
+</html>
