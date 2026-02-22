@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Status — Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+  <script src="../config.js"></script>
+  <script src="../admin.js"></script>
+</head>
+<body>
+<script>
+;(async () => {
+  const sb = await initAdmin()
+  if (!sb) return
+
+  const content = document.getElementById('page-content')
+  content.innerHTML = `
+    <div class="page-header">
+      <div><h1>Status</h1><p>Round-robin rotation order and agent availability.</p></div>
+      <button class="btn btn-secondary btn-sm" id="btn-refresh" onclick="window.refreshStatus()">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        Refresh
+      </button>
+    </div>
+    <div id="status-content"><div class="loading-center"><div class="spinner"></div></div></div>
+  `
+
+  async function loadStatus() {
+    document.getElementById('status-content').innerHTML =
+      '<div class="loading-center"><div class="spinner"></div></div>'
+
+    // Fetch all data in parallel
+    const [etRes, agentsRes, rrRes, todayRes, tomorrowRes] = await Promise.all([
+      sb.from('event_types')
+        .select('id, name, color, duration_minutes, is_active, event_type_agents(agent_id, priority)')
+        .eq('is_active', true)
+        .order('created_at'),
+      sb.from('agents')
+        .select('id, name, email, google_refresh_token, google_token_expiry, is_active')
+        .order('name'),
+      sb.from('round_robin_state')
+        .select('event_type_id, last_agent_id, updated_at'),
+      // Today's confirmed bookings
+      sb.from('bookings')
+        .select('agent_id, start_time, end_time, customer_name, status')
+        .eq('status', 'confirmed')
+        .gte('start_time', todayStart())
+        .lte('start_time', todayEnd()),
+      // Tomorrow's confirmed bookings
+      sb.from('bookings')
+        .select('agent_id, start_time, end_time, customer_name, status')
+        .eq('status', 'confirmed')
+        .gte('start_time', tomorrowStart())
+        .lte('start_time', tomorrowEnd()),
+    ])
+
+    const eventTypes = etRes.data || []
+    const agents     = agentsRes.data || []
+    const rrStates   = rrRes.data || []
+    const todayBkgs  = todayRes.data || []
+    const tmrwBkgs   = tomorrowRes.data || []
+
+    const agentMap = Object.fromEntries(agents.map(a => [a.id, a]))
+    const rrMap    = Object.fromEntries(rrStates.map(r => [r.event_type_id, r]))
+
+    const byAgentToday  = groupByAgent(todayBkgs)
+    const byAgentTmrw   = groupByAgent(tmrwBkgs)
+
+    // ── Round-Robin section ────────────────────────────────────────
+    const rrHtml = eventTypes.length === 0
+      ? '<p class="empty-state">No active event types.</p>'
+      : eventTypes.map(et => {
+          const rr = rrMap[et.id]
+          const lastId = rr?.last_agent_id ?? null
+          const etAgents = (et.event_type_agents || [])
+            .sort((a, b) => (a.priority ?? 10) - (b.priority ?? 10))
+
+          if (etAgents.length === 0) return `
+            <div class="card" style="margin-bottom:12px;">
+              <div style="padding:14px 18px; display:flex; align-items:center; gap:10px;">
+                <div style="width:8px;height:8px;border-radius:50%;background:${et.color};flex-shrink:0;"></div>
+                <span style="font-size:13px;font-weight:700;color:var(--text);">${et.name}</span>
+                <span class="badge badge-gray">No agents assigned</span>
+              </div>
+            </div>`
+
+          // Find the "next" agent in sorted list after lastId
+          const lastIdx = etAgents.findIndex(a => a.agent_id === lastId)
+          const nextIdx = lastIdx === -1 ? 0 : (lastIdx + 1) % etAgents.length
+
+          const rows = etAgents.map((ea, i) => {
+            const agent = agentMap[ea.agent_id]
+            if (!agent) return ''
+            const isNext      = i === nextIdx
+            const isLast      = ea.agent_id === lastId
+            const connected   = !!agent.google_refresh_token
+            const todayCount  = (byAgentToday[agent.id] || []).length
+            const priority    = ea.priority ?? 10
+
+            return `
+              <div style="display:flex;align-items:center;gap:12px;padding:11px 18px;
+                border-bottom:1px solid var(--border);
+                ${isNext ? 'background:rgba(245,197,66,0.04);' : ''}">
+                <div style="width:26px;height:26px;border-radius:50%;
+                  background:${isNext ? 'var(--gold)' : 'var(--surface-3)'};
+                  color:${isNext ? '#000' : 'var(--text-3)'};
+                  display:flex;align-items:center;justify-content:center;
+                  font-size:11px;font-weight:800;flex-shrink:0;">${priority}</div>
+                <div style="flex:1;min-width:0;">
+                  <div style="font-size:13px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+                    ${agent.name}
+                    ${isNext ? '<span class="badge badge-yellow" style="font-size:10px;">Next up</span>' : ''}
+                    ${isLast && !isNext ? '<span class="badge badge-gray" style="font-size:10px;">Last assigned</span>' : ''}
+                  </div>
+                  <div style="font-size:11px;color:var(--text-3);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${agent.email}</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
+                  <span class="badge ${connected ? 'badge-green' : 'badge-red'}" style="font-size:10px;">
+                    ${connected ? '● Cal linked' : '● No calendar'}
+                  </span>
+                  ${todayCount > 0 ? `<span class="badge badge-indigo" style="font-size:10px;">${todayCount} today</span>` : ''}
+                </div>
+              </div>`
+          }).join('')
+
+          const lastUpdated = rr ? `Updated ${fmtShort(rr.updated_at)}` : 'No bookings yet'
+
+          return `
+            <div class="card" style="margin-bottom:14px; overflow:hidden;">
+              <div style="padding:14px 18px;border-bottom:1px solid var(--border);
+                display:flex;align-items:center;gap:10px;">
+                <div style="width:8px;height:8px;border-radius:50%;background:${et.color};flex-shrink:0;"></div>
+                <span style="font-size:14px;font-weight:700;color:var(--text);">${et.name}</span>
+                <span class="badge badge-gray">${et.duration_minutes} min</span>
+                <span style="margin-left:auto;font-size:11px;color:var(--text-3);">${lastUpdated}</span>
+              </div>
+              ${rows || '<p class="empty-state" style="padding:16px;">No connected agents.</p>'}
+            </div>`
+        }).join('')
+
+    // ── Agent Status section ───────────────────────────────────────
+    const agentsHtml = agents.length === 0
+      ? '<p class="empty-state">No agents configured.</p>'
+      : agents.map(agent => {
+          const connected   = !!agent.google_refresh_token
+          const todayList   = byAgentToday[agent.id] || []
+          const tmrwList    = byAgentTmrw[agent.id] || []
+
+          const mkRow = b => `
+            <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);">
+              <div style="width:3px;height:3px;border-radius:50%;background:var(--gold);flex-shrink:0;"></div>
+              <span style="font-size:12px;font-weight:600;color:var(--text-2);white-space:nowrap;">${fmtTime(b.start_time)}</span>
+              <span style="font-size:12px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${b.customer_name}</span>
+            </div>`
+
+          return `
+            <div class="card card-body" style="display:flex;flex-direction:column;gap:14px;">
+              <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+                <div>
+                  <div style="font-size:14px;font-weight:700;color:var(--text);">${agent.name}</div>
+                  <div style="font-size:11px;color:var(--text-3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;">${agent.email}</div>
+                </div>
+                <span class="badge ${connected ? 'badge-green' : 'badge-yellow'}" style="flex-shrink:0;">
+                  ${connected ? '● Connected' : '● No calendar'}
+                </span>
+              </div>
+
+              <div>
+                <div style="font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">
+                  Today (${todayList.length})
+                </div>
+                ${todayList.length === 0
+                  ? '<div style="font-size:12px;color:var(--text-3);">Free all day</div>'
+                  : todayList.map(mkRow).join('')}
+              </div>
+
+              ${tmrwList.length > 0 ? `
+              <div>
+                <div style="font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">
+                  Tomorrow (${tmrwList.length})
+                </div>
+                ${tmrwList.map(mkRow).join('')}
+              </div>` : ''}
+            </div>`
+        }).join('')
+
+    document.getElementById('status-content').innerHTML = `
+      <div style="margin-bottom:32px;">
+        <div style="font-size:11px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:14px;">
+          Round-Robin Rotation Order
+        </div>
+        ${rrHtml}
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:14px;">
+          Agent Schedule — Today & Tomorrow
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;">
+          ${agentsHtml}
+        </div>
+      </div>
+    `
+  }
+
+  window.refreshStatus = loadStatus
+  await loadStatus()
+
+  // ── Helpers ────────────────────────────────────────────────────
+  function groupByAgent(bookings) {
+    const map = {}
+    for (const b of bookings) {
+      if (!map[b.agent_id]) map[b.agent_id] = []
+      map[b.agent_id].push(b)
+    }
+    return map
+  }
+
+  function todayStart() {
+    const d = new Date(); d.setHours(0,0,0,0); return d.toISOString()
+  }
+  function todayEnd() {
+    const d = new Date(); d.setHours(23,59,59,999); return d.toISOString()
+  }
+  function tomorrowStart() {
+    const d = new Date(); d.setDate(d.getDate()+1); d.setHours(0,0,0,0); return d.toISOString()
+  }
+  function tomorrowEnd() {
+    const d = new Date(); d.setDate(d.getDate()+1); d.setHours(23,59,59,999); return d.toISOString()
+  }
+})()
+</script>
+</body>
+</html>
