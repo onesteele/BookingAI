@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Availability — Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+  <script src="../config.js"></script>
+  <script src="../admin.js"></script>
+</head>
+<body>
+<script>
+const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
+const HOURS = Array.from({length: 24}, (_, i) => {
+  const h = i % 12 || 12, ampm = i < 12 ? 'AM' : 'PM'
+  return { label: `${h}:00 ${ampm}`, value: `${String(i).padStart(2,'0')}:00:00` }
+})
+
+;(async () => {
+  const sb = await initAdmin()
+  if (!sb) return
+
+  const agentId = new URLSearchParams(location.search).get('agentId')
+  if (!agentId) { window.location.href = './agents.html'; return }
+
+  // Get agent name
+  const { data: agent } = await sb.from('agents').select('name').eq('id', agentId).single()
+  const agentName = agent?.name || 'Agent'
+
+  const content = document.getElementById('page-content')
+  content.innerHTML = `
+    <div class="page-header">
+      <div>
+        <a href="./agents.html" class="btn btn-ghost btn-sm" style="margin-bottom:12px;">← Back to Agents</a>
+        <h1>${agentName}'s Availability</h1>
+        <p>Set the weekly recurring schedule. Google Calendar conflicts are still checked in real time.</p>
+      </div>
+      <button class="btn btn-primary" id="btn-save">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+        Save Schedule
+      </button>
+    </div>
+    <div class="card" id="avail-card"><div class="loading-center"><div class="spinner"></div></div></div>
+    <p class="text-xs text-gray" style="margin-top:10px;">All times are Eastern Time (ET).</p>
+  `
+
+  // Load existing availability
+  const { data: existing } = await sb.from('availability').select('*').eq('agent_id', agentId).order('day_of_week')
+  const scheduleMap = {}
+  for (const s of existing || []) scheduleMap[s.day_of_week] = s
+
+  function hoursSelect(id, selected) {
+    return `<select id="${id}">${HOURS.map(h => `<option value="${h.value}" ${h.value === selected ? 'selected' : ''}>${h.label}</option>`).join('')}</select>`
+  }
+
+  document.getElementById('avail-card').innerHTML = DAYS.map((day, dow) => {
+    const s = scheduleMap[dow]
+    const checked = s ? 'checked' : ''
+    const start = s?.start_time || '09:00:00'
+    const end   = s?.end_time   || '17:00:00'
+    return `
+      <div class="avail-row" id="row-${dow}">
+        <label class="avail-day">
+          <input type="checkbox" id="chk-${dow}" ${checked} onchange="toggleRow(${dow})">
+          <span style="font-size:13px; font-weight:500; color:${checked ? 'var(--gray-900)' : 'var(--gray-400)'};" id="day-label-${dow}">${day}</span>
+        </label>
+        <div class="avail-time" id="time-row-${dow}" style="${!checked ? 'display:none;' : ''}">
+          ${hoursSelect(`start-${dow}`, start)}
+          <span class="text-sm text-gray">to</span>
+          ${hoursSelect(`end-${dow}`, end)}
+        </div>
+        ${!checked ? `<span class="avail-unavail" id="unavail-${dow}">Unavailable</span>` : `<span class="avail-unavail" id="unavail-${dow}" style="display:none;"></span>`}
+      </div>
+    `
+  }).join('')
+
+  window.toggleRow = (dow) => {
+    const checked = document.getElementById(`chk-${dow}`).checked
+    document.getElementById(`time-row-${dow}`).style.display = checked ? 'flex' : 'none'
+    document.getElementById(`unavail-${dow}`).style.display  = checked ? 'none' : 'inline'
+    document.getElementById(`unavail-${dow}`).textContent = checked ? '' : 'Unavailable'
+    document.getElementById(`day-label-${dow}`).style.color = checked ? 'var(--gray-900)' : 'var(--gray-400)'
+  }
+
+  document.getElementById('btn-save').onclick = async () => {
+    const btn = document.getElementById('btn-save')
+    btn.disabled = true; btn.textContent = 'Saving...'
+
+    // Delete existing
+    await sb.from('availability').delete().eq('agent_id', agentId)
+
+    // Build new rows
+    const rows = []
+    for (let dow = 0; dow < 7; dow++) {
+      if (!document.getElementById(`chk-${dow}`).checked) continue
+      rows.push({
+        agent_id:    agentId,
+        day_of_week: dow,
+        start_time:  document.getElementById(`start-${dow}`).value,
+        end_time:    document.getElementById(`end-${dow}`).value,
+        timezone:    'America/New_York',
+      })
+    }
+
+    if (rows.length > 0) {
+      const { error } = await sb.from('availability').insert(rows)
+      if (error) { showToast('Error', error.message, true); btn.disabled = false; btn.textContent = 'Save Schedule'; return }
+    }
+
+    btn.disabled = false
+    btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Save Schedule`
+    showToast('Availability saved')
+  }
+})()
+</script>
+</body>
+</html>
