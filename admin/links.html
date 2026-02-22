@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Booking Links — Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+  <script src="../config.js"></script>
+  <script src="../admin.js"></script>
+</head>
+<body>
+<!-- New Link Modal -->
+<div class="modal-overlay hidden" id="modal-link">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>New Booking Link</h2>
+      <p>Generate a shareable URL for customers to book time.</p>
+    </div>
+    <button class="modal-close" onclick="closeModal('modal-link')">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+    <form id="link-form" class="modal-form">
+      <div class="form-group">
+        <label for="l-title">Display Title</label>
+        <input type="text" id="l-title" placeholder="Onboarding Call" required oninput="autoSlug()">
+      </div>
+      <div class="form-group">
+        <label for="l-slug">URL Slug</label>
+        <div style="display:flex; align-items:center; gap:4px;">
+          <span class="text-xs text-gray" style="white-space:nowrap;">book.html?slug=</span>
+          <input type="text" id="l-slug" placeholder="onboarding" required style="font-family:monospace;">
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="l-et">Event Type</label>
+        <select id="l-et" required></select>
+        <p class="text-xs text-gray" id="l-et-hint"></p>
+      </div>
+      <div class="form-group">
+        <label for="l-desc">Description (optional)</label>
+        <input type="text" id="l-desc" placeholder="Brief description shown on the booking page">
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('modal-link')">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="btn-link-save" style="flex:1;">Create Link</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+;(async () => {
+  const sb = await initAdmin()
+  if (!sb) return
+
+  const baseUrl = CONFIG.appBaseUrl
+
+  const content = document.getElementById('page-content')
+  content.innerHTML = `
+    <div class="page-header">
+      <div><h1>Booking Links</h1><p>Generate shareable URLs for customers to book appointments.</p></div>
+      <button class="btn btn-primary" onclick="openModal('modal-link')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        New Link
+      </button>
+    </div>
+    <div class="card" id="links-list"><div class="loading-center"><div class="spinner"></div></div></div>
+  `
+
+  // Load event types for the modal select
+  const { data: eventTypes } = await sb.from('event_types').select('id, name, duration_minutes').eq('is_active', true).order('name')
+  const etSelect = document.getElementById('l-et')
+  if (!eventTypes || eventTypes.length === 0) {
+    etSelect.innerHTML = '<option value="">No event types yet</option>'
+    document.getElementById('l-et-hint').textContent = 'Create an event type first.'
+    document.getElementById('btn-link-save').disabled = true
+  } else {
+    etSelect.innerHTML = eventTypes.map(et => `<option value="${et.id}">${et.name} (${et.duration_minutes} min)</option>`).join('')
+  }
+
+  async function loadLinks() {
+    const { data, error } = await sb
+      .from('booking_links')
+      .select('*, event_type:event_types(name, color, duration_minutes)')
+      .order('created_at', { ascending: false })
+
+    if (error) { document.getElementById('links-list').innerHTML = `<p class="empty-state">Error: ${error.message}</p>`; return }
+    if (!data || data.length === 0) {
+      document.getElementById('links-list').innerHTML = '<p class="empty-state">No booking links yet.</p>'
+      return
+    }
+
+    document.getElementById('links-list').innerHTML = data.map(link => {
+      const url = `${baseUrl}/book.html?slug=${link.slug}`
+      const et = link.event_type
+      return `
+        <div class="list-item">
+          ${et ? `<div class="list-item-color-bar" style="background:${et.color}"></div>` : ''}
+          <div class="list-item-info">
+            <div class="list-item-name">
+              ${link.title || link.slug}
+              <span class="badge ${link.is_active ? 'badge-green' : 'badge-gray'}">${link.is_active ? 'Active' : 'Inactive'}</span>
+              ${et ? `<span class="badge badge-indigo">${et.name} · ${et.duration_minutes} min</span>` : ''}
+            </div>
+            <div class="list-item-sub font-mono truncate">${url}</div>
+          </div>
+          <div class="list-item-actions">
+            <button class="btn btn-ghost btn-sm" onclick="copyLink('${url}')" title="Copy link">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              Copy
+            </button>
+            <button class="btn btn-ghost btn-sm" onclick="window.open('${url}','_blank')" title="Open">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            </button>
+            <button class="btn btn-ghost btn-sm" onclick="toggleLink('${link.id}', ${!link.is_active})">${link.is_active ? 'Disable' : 'Enable'}</button>
+            <button class="btn btn-ghost btn-sm" onclick="deleteLink('${link.id}')" style="color:var(--red);">Delete</button>
+          </div>
+        </div>
+      `
+    }).join('')
+  }
+
+  await loadLinks()
+
+  window.autoSlug = () => {
+    const title = document.getElementById('l-title').value
+    document.getElementById('l-slug').value = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  }
+
+  window.copyLink = (url) => {
+    navigator.clipboard.writeText(url)
+    showToast('Link copied!')
+  }
+
+  window.toggleLink = async (id, newState) => {
+    const { error } = await sb.from('booking_links').update({ is_active: newState }).eq('id', id)
+    if (error) { showToast('Error', error.message, true); return }
+    await loadLinks()
+  }
+
+  window.deleteLink = async (id) => {
+    if (!confirmAction('Delete this booking link?')) return
+    const { error } = await sb.from('booking_links').delete().eq('id', id)
+    if (error) { showToast('Error', error.message, true); return }
+    showToast('Link deleted')
+    await loadLinks()
+  }
+
+  document.getElementById('link-form').onsubmit = async (e) => {
+    e.preventDefault()
+    const btn = document.getElementById('btn-link-save')
+    btn.disabled = true; btn.textContent = 'Creating...'
+
+    const { error } = await sb.from('booking_links').insert({
+      slug:          document.getElementById('l-slug').value.trim(),
+      event_type_id: document.getElementById('l-et').value,
+      title:         document.getElementById('l-title').value.trim() || null,
+      description:   document.getElementById('l-desc').value.trim()  || null,
+    })
+
+    btn.disabled = false; btn.textContent = 'Create Link'
+    if (error) { showToast('Error', error.message, true); return }
+
+    document.getElementById('link-form').reset()
+    closeModal('modal-link')
+    showToast('Booking link created')
+    await loadLinks()
+  }
+})()
+</script>
+</body>
+</html>

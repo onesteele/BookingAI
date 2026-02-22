@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agents — Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+  <script src="../config.js"></script>
+  <script src="../admin.js"></script>
+</head>
+<body>
+<!-- Add Agent Modal -->
+<div class="modal-overlay hidden" id="modal-add">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Add Team Member</h2>
+      <p>Add a new agent. They'll connect their Google Calendar after being added.</p>
+    </div>
+    <button class="modal-close" onclick="closeModal('modal-add')">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+    <form id="add-form" class="modal-form">
+      <div class="form-group">
+        <label for="a-name">Full Name</label>
+        <input type="text" id="a-name" placeholder="Jane Smith" required>
+      </div>
+      <div class="form-group">
+        <label for="a-email">Work Email</label>
+        <input type="email" id="a-email" placeholder="jane@yourcompany.com" required>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('modal-add')">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="btn-add" style="flex:1;">Add Agent</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+(async () => {
+  const sb = await initAdmin()
+  if (!sb) return
+
+  const content = document.getElementById('page-content')
+  content.innerHTML = `
+    <div class="page-header">
+      <div><h1>Agents</h1><p>Manage team members and their Google Calendar connections.</p></div>
+      <button class="btn btn-primary" onclick="openModal('modal-add')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Add Agent
+      </button>
+    </div>
+    <div class="card" id="agents-list"><div class="loading-center"><div class="spinner"></div></div></div>
+  `
+
+  async function loadAgents() {
+    const { data, error } = await sb
+      .from('agents')
+      .select('id, name, email, google_token_expiry, is_active')
+      .order('created_at', { ascending: true })
+
+    if (error) { document.getElementById('agents-list').innerHTML = `<p class="empty-state">Error: ${error.message}</p>`; return }
+    if (!data || data.length === 0) {
+      document.getElementById('agents-list').innerHTML = '<p class="empty-state">No agents yet. Add your first team member.</p>'
+      return
+    }
+
+    document.getElementById('agents-list').innerHTML = data.map(a => {
+      const connected = !!a.google_token_expiry
+      return `
+        <div class="list-item">
+          <div class="list-item-avatar">${a.name.charAt(0).toUpperCase()}</div>
+          <div class="list-item-info">
+            <div class="list-item-name">
+              ${a.name}
+              <span class="badge ${a.is_active ? 'badge-green' : 'badge-gray'}">${a.is_active ? 'Active' : 'Inactive'}</span>
+              <span class="badge ${connected ? 'badge-green' : 'badge-yellow'}">${connected ? '✓ Calendar' : '! No Calendar'}</span>
+            </div>
+            <div class="list-item-sub">${a.email}</div>
+          </div>
+          <div class="list-item-actions">
+            <button class="btn btn-secondary btn-sm" onclick="connectCalendar('${a.id}')">
+              ${connected ? 'Reconnect' : 'Connect Calendar'}
+            </button>
+            <a href="./availability.html?agentId=${a.id}" class="btn btn-secondary btn-sm" title="Set availability">Schedule</a>
+            <button class="btn btn-ghost btn-sm" onclick="toggleAgent('${a.id}', ${!a.is_active})">${a.is_active ? 'Deactivate' : 'Activate'}</button>
+            <button class="btn btn-ghost btn-sm" onclick="deleteAgent('${a.id}', '${a.name}')" style="color:var(--red);">Remove</button>
+          </div>
+        </div>`
+    }).join('')
+  }
+
+  await loadAgents()
+
+  // Add agent form
+  document.getElementById('add-form').onsubmit = async (e) => {
+    e.preventDefault()
+    const name  = document.getElementById('a-name').value.trim()
+    const email = document.getElementById('a-email').value.trim()
+    const btn   = document.getElementById('btn-add')
+    btn.disabled = true; btn.textContent = 'Adding...'
+
+    const { error } = await sb.from('agents').insert({ name, email })
+    btn.disabled = false; btn.textContent = 'Add Agent'
+
+    if (error) { showToast('Error', error.message, true); return }
+    document.getElementById('a-name').value = ''
+    document.getElementById('a-email').value = ''
+    closeModal('modal-add')
+    showToast('Agent added')
+    await loadAgents()
+  }
+
+  window.connectCalendar = async (agentId) => {
+    const { data: { session } } = await sb.auth.getSession()
+    if (!session) { showToast('Error', 'Not authenticated', true); return }
+
+    try {
+      const res = await fetch(`${CONFIG.supabaseUrl}/functions/v1/google-auth-init`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': CONFIG.supabaseAnonKey,
+        },
+        body: JSON.stringify({ agent_id: agentId }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.url) { showToast('Error', data.error || 'Could not get auth URL', true); return }
+      window.location.href = data.url
+    } catch (err) {
+      showToast('Error', 'Could not reach edge function', true)
+    }
+  }
+
+  window.toggleAgent = async (id, newState) => {
+    const { error } = await sb.from('agents').update({ is_active: newState }).eq('id', id)
+    if (error) { showToast('Error', error.message, true); return }
+    await loadAgents()
+  }
+
+  window.deleteAgent = async (id, name) => {
+    if (!confirmAction(`Remove ${name}? This cannot be undone.`)) return
+    const { error } = await sb.from('agents').delete().eq('id', id)
+    if (error) { showToast('Error', error.message, true); return }
+    showToast('Agent removed')
+    await loadAgents()
+  }
+})()
+</script>
+</body>
+</html>
