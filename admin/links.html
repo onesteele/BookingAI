@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Booking Links — Admin</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../style.css">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
   <script src="../config.js"></script>
@@ -25,13 +25,13 @@
     <form id="link-form" class="modal-form">
       <div class="form-group">
         <label for="l-title">Display Title</label>
-        <input type="text" id="l-title" placeholder="Onboarding Call" required oninput="autoSlug()">
+        <input type="text" id="l-title" placeholder="Strategy Call" required oninput="autoSlug()">
       </div>
       <div class="form-group">
         <label for="l-slug">URL Slug</label>
         <div style="display:flex; align-items:center; gap:4px;">
           <span class="text-xs text-gray" style="white-space:nowrap;">book.html?slug=</span>
-          <input type="text" id="l-slug" placeholder="onboarding" required style="font-family:monospace;">
+          <input type="text" id="l-slug" placeholder="strategy-call" required style="font-family:monospace;">
         </div>
       </div>
       <div class="form-group">
@@ -42,6 +42,27 @@
       <div class="form-group">
         <label for="l-desc">Description (optional)</label>
         <input type="text" id="l-desc" placeholder="Brief description shown on the booking page">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="l-min-notice">Minimum Notice</label>
+          <select id="l-min-notice">
+            <option value="1">1 Hour</option>
+            <option value="4">4 Hours</option>
+            <option value="24" selected>1 Day</option>
+            <option value="168">1 Week</option>
+          </select>
+          <p class="text-xs text-gray">How soon someone can book</p>
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="l-max-advance">Booking Window</label>
+          <select id="l-max-advance">
+            <option value="7">1 Week</option>
+            <option value="14" selected>14 Days</option>
+            <option value="30">1 Month</option>
+          </select>
+          <p class="text-xs text-gray">How far out people can book</p>
+        </div>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" onclick="closeModal('modal-link')">Cancel</button>
@@ -155,10 +176,12 @@
     btn.disabled = true; btn.textContent = 'Creating...'
 
     const { error } = await sb.from('booking_links').insert({
-      slug:          document.getElementById('l-slug').value.trim(),
-      event_type_id: document.getElementById('l-et').value,
-      title:         document.getElementById('l-title').value.trim() || null,
-      description:   document.getElementById('l-desc').value.trim()  || null,
+      slug:             document.getElementById('l-slug').value.trim(),
+      event_type_id:    document.getElementById('l-et').value,
+      title:            document.getElementById('l-title').value.trim() || null,
+      description:      document.getElementById('l-desc').value.trim()  || null,
+      min_notice_hours: parseInt(document.getElementById('l-min-notice').value),
+      max_advance_days: parseInt(document.getElementById('l-max-advance').value),
     })
 
     btn.disabled = false; btn.textContent = 'Create Link'
